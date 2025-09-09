@@ -238,7 +238,7 @@ def upload_pitches_to_supabase(pitchers_dict: Dict[Tuple[str, str, int], Dict]):
             try:
                 # Use upsert to handle conflicts based on primary key
                 result = (
-                    supabase.table("PitchCounts")
+                    supabase.table("DevPitchCounts")
                     .upsert(batch, on_conflict="Pitcher,PitcherTeam,Year")
                     .execute()
                 )
@@ -257,7 +257,7 @@ def upload_pitches_to_supabase(pitchers_dict: Dict[Tuple[str, str, int], Dict]):
 
         # Get final count
         count_result = (
-            supabase.table("PitchCounts")
+            supabase.table("DevPitchCounts")
             .select("*", count="exact")
             .eq("Year", 2025)
             .execute()
