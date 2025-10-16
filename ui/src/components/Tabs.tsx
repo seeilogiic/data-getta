@@ -30,7 +30,7 @@ export default function Tabs() {
       <ListItem disablePadding sx={{ pb: 2 }}>
         <ListItemButton
           component={RouterLink}
-          to="/team/AUB_TIG/roster"
+          to="/team/AUB_TIG/batting"
           sx={{
             gap: 2,
             justifyContent: 'center',

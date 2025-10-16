@@ -16,7 +16,7 @@ interface ConferenceTableProps {
 export default function ConferenceTable({ conferenceGroup }: ConferenceTableProps) {
   const { ConferenceName: name, teams } = conferenceGroup;
   const teamURL: string = '/team/';
-  const table: string = '/roster';
+  const table: string = '/batting';
 
   return (
     <Paper elevation={3} sx={{ paddingX: 1, paddingY: 1 }}>
