@@ -7,8 +7,8 @@ import BattingTab from "@/pages/BattingTab";
 import PitchingTab from "@/pages/PitchingTab";
 import PlayerPage from "@/pages/PlayerPage";
 import PercentilesTab from "@/pages/player/PercentilesTab";
+import HeatMapTab from "@/pages/player/HeatMapTab"; 
 import StatsTab from "@/pages/player/StatsTab";
-import HeatMapTab from "@/pages/player/HeatMapTab";
 import RequireAuth from "@/utils/supabase/requireauth";
 import PublicOnly from "@/utils/supabase/publiconly";
 import ResetPasswordPage from "@/pages/ResetPasswordPage";
@@ -30,7 +30,7 @@ export default function App() {
         <Route element={<RequireAuth />}>
           <Route element={<AppLayout />}>
             <Route path="conferences" element={<ConferencePage />} />
-            
+
             {/* Player-level pages */}
             <Route
               path="team/:trackmanAbbreviation/player/:playerName"

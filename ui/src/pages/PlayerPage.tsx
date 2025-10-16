@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useLocation, useNavigate, Outlet } from 'react-router';
+import { useParams, useLocation, useNavigate, Outlet, useSearchParams } from 'react-router';
 import { supabase } from '@/utils/supabase/client';
 import { PlayersTable } from '@/types/schemas';
 import Box from '@mui/material/Box';
@@ -13,30 +13,33 @@ export default function PlayerPage() {
   }>();
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const roleParam = searchParams.get('role');
+
+  // Narrow role to only 'batter' | 'pitcher', default to 'batter' if invalid or missing
+  const role: 'batter' | 'pitcher' = roleParam === 'pitcher' ? 'pitcher' : 'batter';
 
   const [player, setPlayer] = useState<PlayersTable | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Handle stats redirect - changed to use year instead of date range
+  // Redirect base player URL to stats for current year
   useEffect(() => {
     if (trackmanAbbreviation && playerName) {
       const playerPath = `/team/${trackmanAbbreviation}/player/${playerName}`;
-
-      if (location.pathname === playerPath || location.pathname === `${playerPath}/stats`) {
-        // Use the current year (2025) instead of date range
-        navigate(`${playerPath}/stats/2025`, { replace: true });
+      if (location.pathname === playerPath) {
+        navigate(`${playerPath}/stats/2025?role=${role}`, { replace: true });
       }
     }
-  }, [location.pathname, trackmanAbbreviation, playerName, navigate]);
+  }, [location.pathname, trackmanAbbreviation, playerName, navigate, role]);
 
+  // Fetch player info
   useEffect(() => {
     async function fetchPlayer() {
       if (!trackmanAbbreviation || !playerName) return;
 
       try {
         const decodedTrackmanAbbreviation = decodeURIComponent(trackmanAbbreviation);
-        const decodedPlayerName = decodeURIComponent(playerName).split('_').join(', ');
-        console.log(decodedPlayerName);
+        const decodedPlayerName = decodeURIComponent(playerName).replace('_', ', ');
         setLoading(true);
 
         const { data, error } = await supabase
@@ -48,8 +51,7 @@ export default function PlayerPage() {
           .maybeSingle();
 
         if (error) throw error;
-        console.log('Fetched player data:', data);
-        setPlayer(data);
+        setPlayer(data || null);
       } catch (error) {
         console.error('Error fetching player:', error);
       } finally {
@@ -60,19 +62,15 @@ export default function PlayerPage() {
     fetchPlayer();
   }, [trackmanAbbreviation, playerName]);
 
-  if (loading) {
-    return <div>Loading...</div>;
-  }
-  if (!playerName || !player) {
-    console.log('Player not found:', { trackmanAbbreviation, playerName, player });
-    return <div>Player not found</div>;
-  }
+  if (loading) return <div>Loading...</div>;
+  if (!player) return <div>Player not found</div>;
 
   const decodedTeamName = decodeURIComponent(trackmanAbbreviation || '');
-  const decodedPlayerName = decodeURIComponent(playerName);
+  const decodedPlayerName = decodeURIComponent(playerName || '');
 
   return (
     <Box>
+      {/* Tabs */}
       <Box
         sx={{
           backgroundColor: '#f5f5f5',
@@ -81,11 +79,18 @@ export default function PlayerPage() {
           marginTop: '4px',
         }}
       >
-        <ModelTabs team={decodedTeamName} player={decodedPlayerName} />
+        {/* Pass narrowed role to ModelTabs */}
+        <ModelTabs
+          team={decodedTeamName}
+          player={decodedPlayerName}
+          role={role}
+        />
       </Box>
 
+      {/* Player info and nested content */}
       <Box sx={{ paddingX: { xs: 4, sm: 8 }, paddingY: 4 }}>
         <PlayerInfo name={player.Name} team={player.TeamTrackmanAbbreviation} />
+        {/* Nested routes render here: stats, heat-map, percentiles */}
         <Outlet />
       </Box>
     </Box>

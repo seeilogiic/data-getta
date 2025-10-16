@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
+import { useParams, useSearchParams } from "react-router";
 import StatBar from "@/components/player/StatBar";
-import { useParams } from "react-router";
 import { supabase } from "@/utils/supabase/client";
 
 const boxStyle: React.CSSProperties = {
@@ -12,13 +12,10 @@ const boxStyle: React.CSSProperties = {
   margin: "0 12px",
 };
 
-// ------------------------------------------------------
-// Infield Spray Chart Component
-// ------------------------------------------------------
+// Infield Spray Chart component
 const InfieldSprayChart: React.FC<{ stats: any }> = ({ stats }) => {
   if (!stats) return null;
 
-  // Calculate total and per-slice counts
   const counts = [
     stats.infield_left_slice ?? 0,
     stats.infield_lc_slice ?? 0,
@@ -29,14 +26,11 @@ const InfieldSprayChart: React.FC<{ stats: any }> = ({ stats }) => {
 
   const total = counts.reduce((a, b) => a + b, 0);
   const percents = total > 0 ? counts.map((c) => (c / total) * 100) : counts;
-
-  // Find max % (for scaling)
   const maxPercent = Math.max(...percents, 0);
 
-  // White → red gradient
   const getColor = (percent: number) => {
     if (maxPercent === 0) return "rgb(255,255,255)";
-    const intensity = percent / 50; // 50% maps to full red
+    const intensity = percent / 50;
     const red = 255;
     const green = Math.round(255 * (1 - intensity));
     const blue = Math.round(255 * (1 - intensity));
@@ -52,19 +46,10 @@ const InfieldSprayChart: React.FC<{ stats: any }> = ({ stats }) => {
   ];
 
   return (
-    <svg
-      viewBox="-150 -50 300 200"
-      style={{
-        width: "100%",
-        maxWidth: 400,
-        margin: "auto",
-        transform: "scale(1, -1)", // flip vertically (faces up)
-      }}
-    >
+    <svg viewBox="-150 -50 300 200" style={{ width: "100%", maxWidth: 400, margin: "auto", transform: "scale(1, -1)" }}>
       {slices.map((slice, i) => {
         const startAngle = -45 + i * 18;
         const endAngle = startAngle + 18;
-        const largeArc = endAngle - startAngle > 180 ? 1 : 0;
         const radius = 120;
 
         const x1 = radius * Math.sin((Math.PI / 180) * startAngle);
@@ -72,52 +57,38 @@ const InfieldSprayChart: React.FC<{ stats: any }> = ({ stats }) => {
         const x2 = radius * Math.sin((Math.PI / 180) * endAngle);
         const y2 = radius * Math.cos((Math.PI / 180) * endAngle);
 
-        const d = `M 0 0 L ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} Z`;
-
+        const d = `M 0 0 L ${x1} ${y1} A ${radius} ${radius} 0 0 1 ${x2} ${y2} Z`;
         const color = getColor(slice.percent);
         const label = `${slice.percent.toFixed(0)}%`;
-
         const midAngle = (startAngle + endAngle) / 2;
         const labelX = (radius + 15) * Math.sin((Math.PI / 180) * midAngle);
         const labelY = (radius + 15) * Math.cos((Math.PI / 180) * midAngle);
 
         return (
           <g key={slice.label}>
-            <path d={d} fill={color} stroke="#333" strokeWidth="1" />
-            <text
-              transform={`scale(1, -1)`}
-              x={labelX}
-              y={-labelY}
-              textAnchor="middle"
-              alignmentBaseline="middle"
-              fontSize="12"
-              fill="#222"
-              fontWeight="bold"
-            >
+            <path d={d} fill={color} stroke="#333" strokeWidth={1} />
+            <text transform="scale(1, -1)" x={labelX} y={-labelY} textAnchor="middle" alignmentBaseline="middle" fontSize={12} fill="#222" fontWeight="bold">
               {label}
             </text>
           </g>
         );
       })}
-
-      {/* Home plate marker */}
-      <circle cx="0" cy="0" r="4" fill="#333" transform="scale(1, -1)" />
+      <circle cx={0} cy={0} r={4} fill="#333" transform="scale(1, -1)" />
     </svg>
   );
 };
 
-
-
-
-// ------------------------------------------------------
-// Main PercentilesTab Component
-// ------------------------------------------------------
-const PercentilesTab: React.FC = () => {
+export default function PercentilesTab() {
   const { trackmanAbbreviation, playerName, year } = useParams<{
     trackmanAbbreviation: string;
     playerName: string;
     year: string;
   }>();
+  const [searchParams] = useSearchParams();
+
+  const roleParam = searchParams.get("role");
+  const role: "batter" | "pitcher" | null =
+    roleParam === "batter" || roleParam === "pitcher" ? roleParam : null;
 
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -125,30 +96,43 @@ const PercentilesTab: React.FC = () => {
 
   useEffect(() => {
     async function fetchStats() {
+      if (!role) {
+        setError("Please specify a valid role in the URL query parameter: ?role=batter or ?role=pitcher");
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       setError(null);
 
       try {
         const safeYear = year || "2025";
-        const formattedPlayerName = playerName
-          ? decodeURIComponent(playerName).replace("_", ", ")
-          : "";
-        const decodedTeamName = trackmanAbbreviation
-          ? decodeURIComponent(trackmanAbbreviation)
-          : "";
+        const formattedPlayerName = playerName ? decodeURIComponent(playerName).replace("_", ", ") : "";
+        const decodedTeamName = trackmanAbbreviation ? decodeURIComponent(trackmanAbbreviation) : "";
 
-        const { data: allBatters, error } = await supabase
-          .from("AdvancedBattingStats")
-          .select("*")
-          .eq("BatterTeam", decodedTeamName)
-          .eq("Year", safeYear);
+        if (role === "batter") {
+          const { data, error } = await supabase
+            .from("AdvancedBattingStats")
+            .select("*")
+            .eq("BatterTeam", decodedTeamName)
+            .eq("Year", safeYear);
 
-        if (error) throw error;
+          if (error) throw error;
 
-        const playerStats = allBatters.find(
-          (b: any) => b.Batter === formattedPlayerName
-        );
-        setStats(playerStats);
+          const playerStats = data.find((b: any) => b.Batter === formattedPlayerName);
+          setStats(playerStats);
+        } else if (role === "pitcher") {
+          const { data, error } = await supabase
+            .from("AdvancedPitchingStats")
+            .select("*")
+            .eq("PitcherTeam", decodedTeamName)
+            .eq("Year", safeYear);
+
+          if (error) throw error;
+
+          const playerStats = data.find((p: any) => p.Pitcher === formattedPlayerName);
+          setStats(playerStats);
+        }
       } catch (err: any) {
         console.error(err);
         setError("Failed to load player stats");
@@ -158,7 +142,7 @@ const PercentilesTab: React.FC = () => {
     }
 
     fetchStats();
-  }, [trackmanAbbreviation, playerName, year]);
+  }, [trackmanAbbreviation, playerName, year, role]);
 
   const getRankColor = (rank: number): string => {
     const r = Math.max(0, Math.min(rank, 100));
@@ -171,86 +155,61 @@ const PercentilesTab: React.FC = () => {
     return `rgb(${rVal},${gVal},${bVal})`;
   };
 
+  const batterKeys = [
+    { key: "avg_exit_velo", label: "EV" },
+    { key: "k_per", label: "K%" },
+    { key: "bb_per", label: "BB%" },
+    { key: "la_sweet_spot_per", label: "LA Sweet Spot %" },
+    { key: "hard_hit_per", label: "Hard Hit %" },
+    { key: "whiff_per", label: "Whiff %" },
+    { key: "chase_per", label: "Chase %" },
+  ];
+
+  const pitcherKeys = [
+    { key: "era", label: "ERA" },
+    { key: "whip", label: "WHIP" },
+    { key: "k_per", label: "K%" },
+    { key: "bb_per", label: "BB%" },
+    { key: "csw_per", label: "CSW%" },
+    { key: "hard_hit_per", label: "Hard Hit %" },
+    { key: "avg_exit_velo_allowed", label: "EV Allowed" },
+  ];
+
+  if (loading) return <div style={{ textAlign: "center", padding: 32 }}>Loading...</div>;
+  if (error) return <div style={{ color: "#d32f2f", textAlign: "center", padding: 32 }}>{error}</div>;
+  if (!stats) return <div style={{ textAlign: "center", padding: 32 }}>No data available</div>;
+
+  const statKeys = role === "batter" ? batterKeys : pitcherKeys;
+
   return (
-    <div
-      style={{
-        display: "flex",
-        width: "100%",
-        maxWidth: 1200,
-        margin: "40px auto",
-        gap: 24,
-      }}
-    >
-      {/* Center: Advanced Stats */}
+    <div style={{ display: "flex", width: "100%", maxWidth: 1200, margin: "40px auto", gap: 24 }}>
       <div style={boxStyle}>
         <div style={{ width: "100%", maxWidth: 400 }}>
-          <h2 style={{ textAlign: "center", marginBottom: 24 }}>
-            Advanced Stats
-          </h2>
-          {loading ? (
-            <div style={{ textAlign: "center", padding: 32 }}>Loading...</div>
-          ) : error ? (
-            <div
-              style={{ color: "#d32f2f", textAlign: "center", padding: 32 }}
-            >
-              {error}
-            </div>
-          ) : stats ? (
-            <div>
-              {[
-                { key: "avg_exit_velo", label: "EV" },
-                { key: "k_per", label: "K%" },
-                { key: "bb_per", label: "BB%" },
-                { key: "la_sweet_spot_per", label: "LA Sweet Spot %" },
-                { key: "hard_hit_per", label: "Hard Hit %" },
-                { key: "whiff_per", label: "Whiff %" },
-                { key: "chase_per", label: "Chase %" },
-              ].map(({ key, label }) => {
-                const rankKey = `${key}_rank`;
-                let rank =
-                  typeof stats[rankKey] === "number" ? stats[rankKey] : 1;
+          <h2 style={{ textAlign: "center", marginBottom: 24 }}>Advanced Stats</h2>
+          {statKeys.map(({ key, label }) => {
+            const rankKey = `${key}_rank`;
+            let rank = typeof stats[rankKey] === "number" ? stats[rankKey] : 1;
+            rank = Math.round(rank);
 
-                rank = Math.round(rank);
+            const statValue =
+              typeof stats[key] === "number"
+                ? key.endsWith("per") || key === "k_per" || key === "bb_per"
+                  ? `${(stats[key] * 100).toFixed(1)}%`
+                  : stats[key].toFixed(2)
+                : "0.0";
 
-                const statValue =
-                  typeof stats[key] === "number"
-                    ? key.endsWith("per") || key === "k_per" || key === "bb_per"
-                      ? `${(stats[key] * 100).toFixed(1)}%`
-                      : stats[key].toFixed(1)
-                    : "0.0";
+            return <StatBar key={key} statName={label} percentile={rank} color={getRankColor(rank)} statValue={statValue} />;
+          })}
 
-                return (
-                  <StatBar
-                    key={key}
-                    statName={label}
-                    percentile={rank}
-                    color={getRankColor(rank)}
-                    statValue={statValue}
-                  />
-                );
-              })}
-            </div>
-          ) : (
-            <div style={{ textAlign: "center", padding: 32 }}>
-              No Data Available
-            </div>
+          {/* Infield slices for batters */}
+          {role === "batter" && (
+            <>
+              <h2 style={{ textAlign: "center", margin: "32px 0 16px" }}>Infield Slices</h2>
+              <InfieldSprayChart stats={stats} />
+            </>
           )}
         </div>
       </div>
-
-      {/* Right: Flipped Infield Spray Chart */}
-      <div style={boxStyle}>
-        {!loading && stats ? (
-          <div style={{ textAlign: "center" }}>
-            <h2 style={{ marginBottom: 16 }}>Infield Spray Chart</h2>
-            <InfieldSprayChart stats={stats} />
-          </div>
-        ) : (
-          <div style={{ textAlign: "center", padding: 32 }}>Loading chart...</div>
-        )}
-      </div>
     </div>
   );
-};
-
-export default PercentilesTab;
+}
