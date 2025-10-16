@@ -122,6 +122,14 @@ def get_advanced_pitching_stats_from_buffer(buffer, filename: str) -> Dict[Tuple
                 (group['Angle']).notna()
             ].shape[0]
 
+            # Calculate ground balls
+            ground_balls = group[
+                (group["PitchCall"] == "InPlay") &
+                (group["TaggedHitType"] == "GroundBall") &
+                (group["ExitSpeed"].notna()) &
+                (group['Angle']).notna()
+            ].shape[0]
+
             # Calculate fastballs thrown with release speed tracked
             fastballs = group[
                 (group["TaggedPitchType"] == "Fastball") &
@@ -169,6 +177,9 @@ def get_advanced_pitching_stats_from_buffer(buffer, filename: str) -> Dict[Tuple
             k_percentage = strikeouts / plate_appearances if plate_appearances > 0 else None
             bb_percentage = walks / plate_appearances if plate_appearances > 0 else None
 
+            # GB %
+            gb_per = ground_balls / batted_balls if batted_balls > 0 else None
+
             # Initialize zone stats counters
             in_zone_pitches = 0
             out_of_zone_pitches = 0
@@ -215,6 +226,8 @@ def get_advanced_pitching_stats_from_buffer(buffer, filename: str) -> Dict[Tuple
                 "chase_per": round(chase_per, 3) if chase_per is not None else None,
                 "fastballs": fastballs,
                 "avg_fastball_velo": round(avg_fastball_velo, 1) if avg_fastball_velo is not None else None,
+                "ground_balls": ground_balls,
+                "gb_per": round(gb_per, 3) if gb_per is not None else None,
             }
 
             pitchers_dict[key] = pitcher_stats
@@ -245,6 +258,11 @@ def combine_advanced_pitching_stats(existing_stats: Dict, new_stats: Dict) -> Di
     new_batted_balls = safe_get(new_stats, "batted_balls")
     combined_batted_balls = existing_batted_balls + new_batted_balls
 
+    # Combine ground balls
+    existing_ground_balls = safe_get(existing_stats, "ground_balls")
+    new_ground_balls = safe_get(new_stats, "ground_balls")
+    combined_ground_balls = existing_ground_balls + new_ground_balls
+
     # Compute combined average exit velocity
     existing_total_exit_velo = safe_get(existing_stats, "avg_exit_velo") * existing_batted_balls
     new_total_exit_velo = safe_get(new_stats, "avg_exit_velo") * new_batted_balls
@@ -258,6 +276,11 @@ def combine_advanced_pitching_stats(existing_stats: Dict, new_stats: Dict) -> Di
     existing_walks = safe_get(existing_stats, "bb_per") * existing_plate_app
     new_walks = safe_get(new_stats, "bb_per") * new_plate_app
     combined_bb_per = (existing_walks + new_walks) / combined_plate_app if combined_plate_app > 0 else None
+
+    # Combine GB %
+    existing_gb_per = safe_get(existing_stats, "gb_per") * existing_batted_balls
+    new_gb_per = safe_get(new_stats, "gb_per") * new_batted_balls
+    combined_gb_per = (existing_gb_per + new_gb_per) / combined_batted_balls if combined_batted_balls > 0 else None
 
     # Combine LA Sweet Spot and Hard Hit percentages
     existing_sweet_spot = safe_get(existing_stats, "la_sweet_spot_per") * existing_batted_balls
@@ -312,6 +335,8 @@ def combine_advanced_pitching_stats(existing_stats: Dict, new_stats: Dict) -> Di
         "chase_per": round(combined_chase_per, 3) if combined_chase_per is not None else None,
         "fastballs": combined_fastballs,
         "avg_fastball_velo": round(combined_avg_fastball_velo, 1) if combined_avg_fastball_velo is not None else None,
+        "ground_balls": combined_ground_balls,
+        "gb_per": round(combined_gb_per, 3) if combined_gb_per is not None else None,
     }
 def upload_advanced_pitching_to_supabase(pitchers_dict: Dict[Tuple[str, str, int], Dict]):
     """Upload pitching stats to Supabase and compute scaled percentile ranks"""
@@ -382,7 +407,9 @@ def upload_advanced_pitching_to_supabase(pitchers_dict: Dict[Tuple[str, str, int
         offset = 0
         while True:
             result = supabase.table("AdvancedPitchingStats").select(
-                "Pitcher,PitcherTeam,Year,avg_exit_velo,k_per,bb_per,la_sweet_spot_per,hard_hit_per,whiff_per,chase_per,avg_fastball_velo"
+                "Pitcher,PitcherTeam,Year,avg_exit_velo,k_per,bb_per,"
+                + "la_sweet_spot_per,hard_hit_per,whiff_per,chase_per,"
+                + "avg_fastball_velo, gb_per"
             ).range(offset, offset + batch_size - 1).execute()
             data = result.data
             if not data:
@@ -422,6 +449,7 @@ def upload_advanced_pitching_to_supabase(pitchers_dict: Dict[Tuple[str, str, int
             temp["whiff_per_rank"] = rank_and_scale_to_1_100(temp["whiff_per"], ascending=True)
             temp["chase_per_rank"] = rank_and_scale_to_1_100(temp["chase_per"], ascending=True)
             temp["avg_fastball_rank"] = rank_and_scale_to_1_100(temp["avg_fastball_velo"], ascending=True)
+            temp["gb_per_rank"] = rank_and_scale_to_1_100(temp["gb_per"], ascending=True)
             ranked_dfs.append(temp)
 
         ranked_df = pd.concat(ranked_dfs, ignore_index=True)
@@ -432,7 +460,8 @@ def upload_advanced_pitching_to_supabase(pitchers_dict: Dict[Tuple[str, str, int
             "Pitcher","PitcherTeam","Year",
             "avg_exit_velo_rank","k_per_rank","bb_per_rank",
             "la_sweet_spot_per_rank","hard_hit_per_rank",
-            "whiff_per_rank","chase_per_rank","avg_fastball_rank"
+            "whiff_per_rank","chase_per_rank","avg_fastball_rank",
+            "gb_per_rank"
         ]
         update_data = ranked_df[update_cols].to_dict(orient="records")
         for record in update_data:
