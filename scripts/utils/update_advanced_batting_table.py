@@ -159,14 +159,25 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
             batted_balls = group[
                 (group["PitchCall"] == "InPlay") &
                 (group["ExitSpeed"].notna()) &
-                (group['Angle']).notna()
+                (group['Angle']).notna() &
+                (group["Direction"].notna()) &
+                (group["BatterSide"].notna())
             ].shape[0]
+
+            # Calculate at-bats
+            at_bats = len(
+                group[
+                    group["KorBB"].isin(["Strikeout"])
+                ]
+            ) + batted_balls
 
             # LA Sweet Spot percentage
             sweet_spot_balls = group[
                 (group["PitchCall"] == "InPlay") &
                 (group["ExitSpeed"].notna()) &
                 (group["Angle"].notna()) &
+                (group["Direction"].notna()) &
+                (group["BatterSide"].notna()) &
                 (group["Angle"] >= 8) & (group["Angle"] <= 32)
             ].shape[0]
             la_sweet_spot_per = (sweet_spot_balls / batted_balls) if batted_balls > 0 else None
@@ -176,7 +187,9 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
                 (group["PitchCall"] == "InPlay") &
                 (group["ExitSpeed"].notna()) &
                 (group["ExitSpeed"] >= 95) &
-                (group["Angle"].notna())
+                (group["Angle"].notna()) &
+                (group["Direction"].notna()) &
+                (group["BatterSide"].notna())
             ].shape[0]
             hard_hit_per = (hard_hit_balls / batted_balls) if batted_balls > 0 else None
 
@@ -184,7 +197,9 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
             total_exit_velo = group[
                 (group["PitchCall"] == "InPlay") &
                 (group["ExitSpeed"].notna()) &
-                (group["Angle"].notna())
+                (group["Angle"].notna()) &
+                (group["Direction"].notna()) &
+                (group["BatterSide"].notna())
             ]["ExitSpeed"].sum()
             avg_exit_velo = total_exit_velo / batted_balls if batted_balls > 0 else None
 
@@ -289,30 +304,41 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
                 if xba is not None:
                     xba_values.append(xba)
 
-            xba_per = np.mean(xba_values) if xba_values else None
+            # Weighted by batted balls and total at-bats
+            if xba_values:
+                avg_xba_batted_balls = np.mean(xba_values)
+                batter_xba = (avg_xba_batted_balls * batted_balls) / at_bats
+                batter_xba = max(batter_xba, 0)  # Clip minimum
+            else:
+                batter_xba = 0
 
-                        # --- Predict xSLG using the XGBoost model ---
+            # --- Predict xSLG using the XGBoost model ---
             if xslg_model is not None and batted_balls > 0:
                 try:
-                    # Use per-batted-ball data for prediction
                     valid_batted_balls = group[
                         (group["PitchCall"] == "InPlay") &
                         (group["ExitSpeed"].notna()) &
                         (group["Angle"].notna()) &
-                        (group["Bearing"].notna())
-                    ][["ExitSpeed", "Angle", "Bearing"]]
+                        (group["Direction"].notna()) &
+                        (group["BatterSide"].notna())
+                    ][["ExitSpeed", "Angle", "Direction", "BatterSide"]]
+
+                    # Convert BatterSide to numeric if needed
+                    valid_batted_balls["BatterSide"] = valid_batted_balls["BatterSide"].map({"Left": 0, "Right": 1})
 
                     if not valid_batted_balls.empty:
-                        X_input = valid_batted_balls[["ExitSpeed", "Angle", "Bearing"]]
-                        preds = xslg_model.predict(X_input)
-                        batter_xslg = float(np.mean(preds))
+                        preds = xslg_model.predict(valid_batted_balls)
+                        avg_xslg_batted_balls = float(np.mean(preds))
+                        # Adjust for total at-bats
+                        batter_xslg = (avg_xslg_batted_balls * batted_balls) / at_bats
+                        batter_xslg = max(batter_xslg, 0)  # Clip minimum
                     else:
-                        batter_xslg = None
+                        batter_xslg = 0
                 except Exception as e:
                     print(f"Error predicting xSLG for {batter_name}: {e}")
-                    batter_xslg = None
+                    batter_xslg = 0
             else:
-                batter_xslg = None
+                batter_xslg = 0
 
             # Store computed stats for batter
             batter_stats = {
@@ -340,8 +366,9 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
                 "infield_rc_per": round(infield_rc_per, 3) if infield_rc_per is not None else None,
                 "infield_right_slice": infield_right_slice,
                 "infield_right_per": round(infield_right_per, 3) if infield_right_per is not None else None,
-                "xBA_per": round(xba_per, 3) if xba_per is not None else None,
+                "xba_per": round(batter_xba, 3) if batter_xba is not None else None,
                 "xslg_per": round(batter_xslg, 3) if batter_xslg is not None else None,
+                "at_bats": at_bats,
             }
 
             batters_dict[key] = batter_stats
@@ -358,9 +385,10 @@ def combine_advanced_batting_stats(existing_stats: Dict, new_stats: Dict) -> Dic
     if not existing_stats:
         return new_stats
     
-    # Combine plate appearances and batted balls
+    # Combine plate appearances, batted balls, and at-bats
     combined_plate_app = existing_stats.get("plate_app", 0) + new_stats.get("plate_app", 0)
     combined_batted_balls = existing_stats.get("batted_balls", 0) + new_stats.get("batted_balls", 0)
+    combined_at_bats = existing_stats.get("at_bats", 0) + new_stats.get("at_bats", 0)
     
     # Compute combined average exit velocity
     existing_total_exit_velo = (existing_stats.get("avg_exit_velo", 0) or 0) * (existing_stats.get("batted_balls", 0) or 0)
@@ -419,12 +447,18 @@ def combine_advanced_batting_stats(existing_stats: Dict, new_stats: Dict) -> Dic
     combined_infield_rc_per = combined_infield_rc_slice / total_infield_batted_balls if total_infield_batted_balls > 0 else None
     combined_infield_right_per = combined_infield_right_slice / total_infield_batted_balls if total_infield_batted_balls > 0 else None
 
-    existing_total_xba = (existing_stats.get("xBA_per", 0) or 0) * (existing_stats.get("batted_balls", 0) or 0)
-    new_total_xba = (new_stats.get("xBA_per", 0) or 0) * (new_stats.get("batted_balls", 0) or 0)
-    combined_xba_per = None
-    if combined_batted_balls > 0:
-        combined_xba_per = (existing_total_xba + new_total_xba) / combined_batted_balls
+    # Combine with existing stats
+    existing_total_xba = (existing_stats.get("xba_per", 0) or 0) * (existing_stats.get("at_bats", 0) or 0)
+    new_total_xba = (new_stats.get("xba_per", 0) or 0) * (new_stats.get("at_bats", 0) or 0)
+    combined_xba_per = (existing_total_xba + new_total_xba) / combined_at_bats if combined_at_bats > 0 else 0
+    if combined_xba_per < 0:
+        combined_xba_per = 0
 
+    existing_total_xslg = (existing_stats.get("xslg_per", 0) or 0) * (existing_stats.get("at_bats", 0) or 0)
+    new_total_xslg = (new_stats.get("xslg_per", 0) or 0) * (new_stats.get("at_bats", 0) or 0)
+    combined_xslg_per = (existing_total_xslg + new_total_xslg) / combined_at_bats if combined_at_bats > 0 else 0
+    if combined_xslg_per < 0:
+        combined_xslg_per = 0
 
     return {
         "Batter": new_stats["Batter"],
@@ -451,7 +485,9 @@ def combine_advanced_batting_stats(existing_stats: Dict, new_stats: Dict) -> Dic
         "infield_rc_per": round(combined_infield_rc_per, 3) if combined_infield_rc_per is not None else None,
         "infield_right_slice": combined_infield_right_slice,
         "infield_right_per": round(combined_infield_right_per, 3) if combined_infield_right_per is not None else None,
-        "xBA_per": round(combined_xba_per, 3) if combined_xba_per is not None else None,
+        "xba_per": round(combined_xba_per, 3) if combined_xba_per is not None else None,
+        "xslg_per": round(combined_xslg_per, 3) if combined_xslg_per is not None else None,
+        "at_bats": combined_at_bats,
     }
 
 
@@ -526,7 +562,7 @@ def upload_advanced_batting_to_supabase(batters_dict: Dict[Tuple[str, str, int],
             result = supabase.table("AdvancedBattingStats").select(
                 "Batter,BatterTeam,Year,avg_exit_velo,k_per,"
                 + "bb_per,la_sweet_spot_per,hard_hit_per,whiff_per,"
-                + "chase_per,xBA_per"
+                + "chase_per,xba_per,xslg_per"
             ).range(offset, offset + batch_size - 1).execute()
             data = result.data
             if not data:
@@ -565,7 +601,8 @@ def upload_advanced_batting_to_supabase(batters_dict: Dict[Tuple[str, str, int],
             temp["hard_hit_per_rank"] = rank_and_scale_to_1_100(temp["hard_hit_per"], ascending=True)
             temp["whiff_per_rank"] = rank_and_scale_to_1_100(temp["whiff_per"], ascending=False)
             temp["chase_per_rank"] = rank_and_scale_to_1_100(temp["chase_per"], ascending=False)
-            temp["xBA_per_rank"] = rank_and_scale_to_1_100(temp["xBA_per"], ascending=True)
+            temp["xba_per_rank"] = rank_and_scale_to_1_100(temp["xba_per"], ascending=True)
+            temp["xslg_per_rank"] = rank_and_scale_to_1_100(temp["xslg_per"], ascending=True)
             ranked_dfs.append(temp)
 
         ranked_df = pd.concat(ranked_dfs, ignore_index=True)
@@ -576,7 +613,8 @@ def upload_advanced_batting_to_supabase(batters_dict: Dict[Tuple[str, str, int],
             "Batter","BatterTeam","Year",
             "avg_exit_velo_rank","k_per_rank","bb_per_rank",
             "la_sweet_spot_per_rank","hard_hit_per_rank",
-            "whiff_per_rank","chase_per_rank","xBA_per_rank"
+            "whiff_per_rank","chase_per_rank","xba_per_rank",
+            "xslg_per_rank"
         ]
         update_data = ranked_df[update_cols].to_dict(orient="records")
         for record in update_data:
