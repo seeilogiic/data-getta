@@ -21,6 +21,7 @@ import numpy as np
 from typing import Dict, Tuple, List, Set
 from pathlib import Path
 from .file_date import CSVFilenameParser
+import xgboost as xgb
 
 # Load environment variables
 project_root = Path(__file__).parent.parent.parent
@@ -66,6 +67,19 @@ def lookup_xBA(ev, la, dir_angle):
         return neighbors["xBA"].mean()
     else:
         return xba_grid["xBA"].mean()
+# --- Load pre-trained xSLG model ---
+XSLG_MODEL_PATH = project_root / "scripts" / "utils" / "saved_models" / "xslg_model.json"
+xslg_model = None
+if XSLG_MODEL_PATH.exists():
+    try:
+        xslg_model = xgb.XGBRegressor()
+        xslg_model.load_model(str(XSLG_MODEL_PATH))
+        print("xSLG model loaded successfully.")
+    except Exception as e:
+        print(f"Failed to load xSLG model: {e}")
+else:
+    print("xSLG model not found — skipping xSLG predictions.")
+
 
 
 # Custom JSON encoder for numpy and pandas types
@@ -277,6 +291,28 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
 
             xba_per = np.mean(xba_values) if xba_values else None
 
+                        # --- Predict xSLG using the XGBoost model ---
+            if xslg_model is not None and batted_balls > 0:
+                try:
+                    # Use per-batted-ball data for prediction
+                    valid_batted_balls = group[
+                        (group["PitchCall"] == "InPlay") &
+                        (group["ExitSpeed"].notna()) &
+                        (group["Angle"].notna()) &
+                        (group["Bearing"].notna())
+                    ][["ExitSpeed", "Angle", "Bearing"]]
+
+                    if not valid_batted_balls.empty:
+                        X_input = valid_batted_balls[["ExitSpeed", "Angle", "Bearing"]]
+                        preds = xslg_model.predict(X_input)
+                        batter_xslg = float(np.mean(preds))
+                    else:
+                        batter_xslg = None
+                except Exception as e:
+                    print(f"Error predicting xSLG for {batter_name}: {e}")
+                    batter_xslg = None
+            else:
+                batter_xslg = None
 
             # Store computed stats for batter
             batter_stats = {
@@ -305,6 +341,7 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
                 "infield_right_slice": infield_right_slice,
                 "infield_right_per": round(infield_right_per, 3) if infield_right_per is not None else None,
                 "xBA_per": round(xba_per, 3) if xba_per is not None else None,
+                "xslg_per": round(batter_xslg, 3) if batter_xslg is not None else None,
             }
 
             batters_dict[key] = batter_stats
