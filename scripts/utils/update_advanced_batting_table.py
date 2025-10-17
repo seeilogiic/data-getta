@@ -45,6 +45,28 @@ MAX_PLATE_SIDE = 0.86
 MAX_PLATE_HEIGHT = 3.55
 MIN_PLATE_HEIGHT = 1.77
 
+# Load xBA grid for fast lookups
+XBA_GRID_PATH = project_root / "scripts" / "utils" / "saved_models" / "xBA_grid.csv"
+if XBA_GRID_PATH.exists():
+    xba_grid = pd.read_csv(XBA_GRID_PATH)
+else:
+    print("Warning: xBA grid not found, xBA stats will be skipped")
+    xba_grid = pd.DataFrame(columns=["ev_bin","la_bin","dir_bin","xBA"])
+
+def lookup_xBA(ev, la, dir_angle):
+    """Return xBA using neighbor averaging from precomputed grid."""
+    if xba_grid.empty:
+        return None
+    neighbors = xba_grid[
+        (abs(xba_grid["ev_bin"] - ev) <= 1) &
+        (abs(xba_grid["la_bin"] - la) <= 1) &
+        (abs(xba_grid["dir_bin"] - dir_angle) <= 5)
+    ]
+    if not neighbors.empty:
+        return neighbors["xBA"].mean()
+    else:
+        return xba_grid["xBA"].mean()
+
 
 # Custom JSON encoder for numpy and pandas types
 class NumpyEncoder(json.JSONEncoder):
@@ -228,6 +250,34 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
             whiff_per = in_zone_whiffs / in_zone_pitches if in_zone_pitches > 0 else None
             chase_per = out_of_zone_swings / out_of_zone_pitches if out_of_zone_pitches > 0 else None
 
+            # --- New xBA calculation ---
+            batted_ball_rows = group[
+                (group["PitchCall"] == "InPlay") &
+                (group["ExitSpeed"].notna()) &
+                (group["Angle"].notna()) &
+                (group["Direction"].notna()) &
+                (group["BatterSide"].notna())
+            ]
+
+            xba_values = []
+            for _, row in batted_ball_rows.iterrows():
+                # Mirror left-handed batters
+                dir_angle = float(row["Direction"])
+                if row["BatterSide"] == "Left":
+                    dir_angle *= -1
+
+                # Bin values
+                ev_bin = int(round(float(row["ExitSpeed"])))
+                la_bin = int(round(float(row["Angle"])))
+                dir_bin = int((dir_angle // 5) * 5)
+
+                xba = lookup_xBA(ev_bin, la_bin, dir_bin)
+                if xba is not None:
+                    xba_values.append(xba)
+
+            xba_per = np.mean(xba_values) if xba_values else None
+
+
             # Store computed stats for batter
             batter_stats = {
                 "Batter": batter_name,
@@ -254,6 +304,7 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
                 "infield_rc_per": round(infield_rc_per, 3) if infield_rc_per is not None else None,
                 "infield_right_slice": infield_right_slice,
                 "infield_right_per": round(infield_right_per, 3) if infield_right_per is not None else None,
+                "xBA_per": round(xba_per, 3) if xba_per is not None else None,
             }
 
             batters_dict[key] = batter_stats
@@ -331,6 +382,13 @@ def combine_advanced_batting_stats(existing_stats: Dict, new_stats: Dict) -> Dic
     combined_infield_rc_per = combined_infield_rc_slice / total_infield_batted_balls if total_infield_batted_balls > 0 else None
     combined_infield_right_per = combined_infield_right_slice / total_infield_batted_balls if total_infield_batted_balls > 0 else None
 
+    existing_total_xba = (existing_stats.get("xBA_per", 0) or 0) * (existing_stats.get("batted_balls", 0) or 0)
+    new_total_xba = (new_stats.get("xBA_per", 0) or 0) * (new_stats.get("batted_balls", 0) or 0)
+    combined_xba_per = None
+    if combined_batted_balls > 0:
+        combined_xba_per = (existing_total_xba + new_total_xba) / combined_batted_balls
+
+
     return {
         "Batter": new_stats["Batter"],
         "BatterTeam": new_stats["BatterTeam"],
@@ -356,6 +414,7 @@ def combine_advanced_batting_stats(existing_stats: Dict, new_stats: Dict) -> Dic
         "infield_rc_per": round(combined_infield_rc_per, 3) if combined_infield_rc_per is not None else None,
         "infield_right_slice": combined_infield_right_slice,
         "infield_right_per": round(combined_infield_right_per, 3) if combined_infield_right_per is not None else None,
+        "xBA_per": round(combined_xba_per, 3) if combined_xba_per is not None else None,
     }
 
 
@@ -428,7 +487,9 @@ def upload_advanced_batting_to_supabase(batters_dict: Dict[Tuple[str, str, int],
         offset = 0
         while True:
             result = supabase.table("AdvancedBattingStats").select(
-                "Batter,BatterTeam,Year,avg_exit_velo,k_per,bb_per,la_sweet_spot_per,hard_hit_per,whiff_per,chase_per"
+                "Batter,BatterTeam,Year,avg_exit_velo,k_per,"
+                + "bb_per,la_sweet_spot_per,hard_hit_per,whiff_per,"
+                + "chase_per,xBA_per"
             ).range(offset, offset + batch_size - 1).execute()
             data = result.data
             if not data:
@@ -467,6 +528,7 @@ def upload_advanced_batting_to_supabase(batters_dict: Dict[Tuple[str, str, int],
             temp["hard_hit_per_rank"] = rank_and_scale_to_1_100(temp["hard_hit_per"], ascending=True)
             temp["whiff_per_rank"] = rank_and_scale_to_1_100(temp["whiff_per"], ascending=False)
             temp["chase_per_rank"] = rank_and_scale_to_1_100(temp["chase_per"], ascending=False)
+            temp["xBA_per_rank"] = rank_and_scale_to_1_100(temp["xBA_per"], ascending=True)
             ranked_dfs.append(temp)
 
         ranked_df = pd.concat(ranked_dfs, ignore_index=True)
@@ -477,7 +539,7 @@ def upload_advanced_batting_to_supabase(batters_dict: Dict[Tuple[str, str, int],
             "Batter","BatterTeam","Year",
             "avg_exit_velo_rank","k_per_rank","bb_per_rank",
             "la_sweet_spot_per_rank","hard_hit_per_rank",
-            "whiff_per_rank","chase_per_rank"
+            "whiff_per_rank","chase_per_rank","xBA_per_rank"
         ]
         update_data = ranked_df[update_cols].to_dict(orient="records")
         for record in update_data:
