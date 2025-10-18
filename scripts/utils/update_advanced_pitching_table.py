@@ -128,7 +128,23 @@ def is_in_strike_zone(plate_loc_height, plate_loc_side):
 def get_advanced_pitching_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[str, str, int], Dict]:
     """Extract advanced pitching stats from CSV in memory"""
     try:
-        df = pd.read_csv(buffer)
+        cols_needed = [
+            'Pitcher',
+            'PitcherTeam',
+            'KorBB',
+            'PitchCall',
+            'PlayResult',
+            'ExitSpeed',
+            'Angle',
+            'Direction',
+            'BatterSide',
+            'TaggedHitType',
+            'TaggedPitchType',
+            'RelSpeed',
+            'PlateLocHeight',
+            'PlateLocSide'
+        ]
+        df = pd.read_csv(buffer, usecols=cols_needed)
 
         # Verify required columns exist
         required_columns = ["Pitcher", "PitcherTeam"]
