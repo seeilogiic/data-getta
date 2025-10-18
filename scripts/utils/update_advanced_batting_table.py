@@ -46,6 +46,7 @@ MAX_PLATE_SIDE = 0.86
 MAX_PLATE_HEIGHT = 3.55
 MIN_PLATE_HEIGHT = 1.77
 
+
 # Load xBA grid for fast lookups
 XBA_GRID_PATH = project_root / "scripts" / "utils" / "saved_models" / "xBA_grid.csv"
 if XBA_GRID_PATH.exists():
@@ -67,6 +68,8 @@ def lookup_xBA(ev, la, dir_angle):
         return neighbors["xBA"].mean()
     else:
         return xba_grid["xBA"].mean()
+    
+
 # --- Load pre-trained xSLG model ---
 XSLG_MODEL_PATH = project_root / "scripts" / "utils" / "saved_models" / "xslg_model.json"
 xslg_model = None
@@ -80,6 +83,19 @@ if XSLG_MODEL_PATH.exists():
 else:
     print("xSLG model not found — skipping xSLG predictions.")
 
+
+# --- Load pre-trained xwOBA model ---
+XWOBAM_MODEL_PATH = project_root / "scripts" / "utils" / "saved_models" / "xwoba_model.json"
+xwoba_model = None
+if XWOBAM_MODEL_PATH.exists():
+    try:
+        xwoba_model = xgb.XGBRegressor()
+        xwoba_model.load_model(str(XWOBAM_MODEL_PATH))
+        print("xwOBA model loaded successfully.")
+    except Exception as e:
+        print(f"Failed to load xwOBA model: {e}")
+else:
+    print("xwOBA model not found — skipping xwOBA predictions.")
 
 
 # Custom JSON encoder for numpy and pandas types
@@ -340,6 +356,57 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
             else:
                 batter_xslg = 0
 
+            # --- Predict xwOBA using pre-trained model ---
+            woba_map = {
+                "Single": 0.89,
+                "Double": 1.27,
+                "Triple": 1.62,
+                "HomeRun": 2.10,
+                "Walk": 0.72,
+                "HitByPitch": 0.73,
+                "Sacrifice": 0.0,
+                "FieldersChoice": 0.0,
+                "Out": 0.0,
+                "Error": 0.0,
+                "Undefined": 0.0
+            }
+
+            # Non-batted-ball events
+            walks = len(group[group["KorBB"] == "Walk"])
+            hbps = len(group[group["KorBB"] == "HitByPitch"])
+            sacrifices = len(group[group["PlayResult"] == "Sacrifice"])
+            fielders_choice = len(group[group["PlayResult"] == "FieldersChoice"])
+            outs = len(group[group["PlayResult"] == "Out"])
+
+            # --- Full xwOBA including walks/HBP/etc ---
+            if xwoba_model is not None and batted_balls > 0:
+                try:
+                    valid_bb = batted_ball_rows[["ExitSpeed","Angle","Direction","BatterSide"]].copy()
+                    valid_bb["BatterSide"] = valid_bb["BatterSide"].map({"Left":0,"Right":1})
+                    preds = xwoba_model.predict(valid_bb) if not valid_bb.empty else []
+                    sum_xwOBA_bb = np.sum(preds) if preds != [] else 0
+                    # Add contributions from non-batted-ball events
+                    total_contrib = sum_xwOBA_bb \
+                        + walks * woba_map["Walk"] \
+                        + hbps * woba_map["HitByPitch"] \
+                        + sacrifices * woba_map["Sacrifice"] \
+                        + fielders_choice * woba_map["FieldersChoice"] \
+                        + outs * woba_map["Out"]
+                    xwoba_full = total_contrib / plate_appearances if plate_appearances > 0 else 0
+                    batter_xwoba = xwoba_full
+                except:
+                    batter_xwoba = 0
+            else:
+                batter_xwoba = 0
+
+            # --- Barrel % calculation ---
+            barrel_balls = batted_ball_rows[
+                (batted_ball_rows["xBA"] >= 0.5) & 
+                (batted_ball_rows["xSLG"] >= 1.5)
+            ].shape[0]
+
+            barrel_per = (barrel_balls / batted_balls) if batted_balls > 0 else None
+
             # Store computed stats for batter
             batter_stats = {
                 "Batter": batter_name,
@@ -369,6 +436,8 @@ def get_advanced_batting_stats_from_buffer(buffer, filename: str) -> Dict[Tuple[
                 "xba_per": round(batter_xba, 3) if batter_xba is not None else None,
                 "xslg_per": round(batter_xslg, 3) if batter_xslg is not None else None,
                 "at_bats": at_bats,
+                "xwoba_per": round(batter_xwoba, 3) if batter_xwoba is not None else None,
+                "barrel_per": round(barrel_per, 3) if barrel_per is not None else None,
             }
 
             batters_dict[key] = batter_stats
@@ -447,7 +516,7 @@ def combine_advanced_batting_stats(existing_stats: Dict, new_stats: Dict) -> Dic
     combined_infield_rc_per = combined_infield_rc_slice / total_infield_batted_balls if total_infield_batted_balls > 0 else None
     combined_infield_right_per = combined_infield_right_slice / total_infield_batted_balls if total_infield_batted_balls > 0 else None
 
-    # Combine with existing stats
+    # Combine expected stats (xBA, xSLG, xwOBA)
     existing_total_xba = (existing_stats.get("xba_per", 0) or 0) * (existing_stats.get("at_bats", 0) or 0)
     new_total_xba = (new_stats.get("xba_per", 0) or 0) * (new_stats.get("at_bats", 0) or 0)
     combined_xba_per = (existing_total_xba + new_total_xba) / combined_at_bats if combined_at_bats > 0 else 0
@@ -459,6 +528,12 @@ def combine_advanced_batting_stats(existing_stats: Dict, new_stats: Dict) -> Dic
     combined_xslg_per = (existing_total_xslg + new_total_xslg) / combined_at_bats if combined_at_bats > 0 else 0
     if combined_xslg_per < 0:
         combined_xslg_per = 0
+
+    existing_total_xwoba = (existing_stats.get("xwoba_per",0) or 0) * (existing_stats.get("plate_app",0) or 0)
+    new_total_xwoba = (new_stats.get("xwoba_per",0) or 0) * (new_stats.get("plate_app",0) or 0)
+    combined_xwoba_per = (existing_total_xwoba + new_total_xwoba) / combined_plate_app if combined_plate_app > 0 else 0
+    if combined_xwoba_per < 0:
+        combined_xwoba_per = 0
 
     return {
         "Batter": new_stats["Batter"],
@@ -488,6 +563,7 @@ def combine_advanced_batting_stats(existing_stats: Dict, new_stats: Dict) -> Dic
         "xba_per": round(combined_xba_per, 3) if combined_xba_per is not None else None,
         "xslg_per": round(combined_xslg_per, 3) if combined_xslg_per is not None else None,
         "at_bats": combined_at_bats,
+        "xwoba_per": round(combined_xwoba_per,3) if combined_xwoba_per is not None else None,
     }
 
 
@@ -562,7 +638,7 @@ def upload_advanced_batting_to_supabase(batters_dict: Dict[Tuple[str, str, int],
             result = supabase.table("AdvancedBattingStats").select(
                 "Batter,BatterTeam,Year,avg_exit_velo,k_per,"
                 + "bb_per,la_sweet_spot_per,hard_hit_per,whiff_per,"
-                + "chase_per,xba_per,xslg_per"
+                + "chase_per,xba_per,xslg_per,xwoba_per"
             ).range(offset, offset + batch_size - 1).execute()
             data = result.data
             if not data:
@@ -603,6 +679,7 @@ def upload_advanced_batting_to_supabase(batters_dict: Dict[Tuple[str, str, int],
             temp["chase_per_rank"] = rank_and_scale_to_1_100(temp["chase_per"], ascending=False)
             temp["xba_per_rank"] = rank_and_scale_to_1_100(temp["xba_per"], ascending=True)
             temp["xslg_per_rank"] = rank_and_scale_to_1_100(temp["xslg_per"], ascending=True)
+            temp["xwoba_per_rank"] = rank_and_scale_to_1_100(temp["xwoba_per"], ascending=True)
             ranked_dfs.append(temp)
 
         ranked_df = pd.concat(ranked_dfs, ignore_index=True)
@@ -614,7 +691,7 @@ def upload_advanced_batting_to_supabase(batters_dict: Dict[Tuple[str, str, int],
             "avg_exit_velo_rank","k_per_rank","bb_per_rank",
             "la_sweet_spot_per_rank","hard_hit_per_rank",
             "whiff_per_rank","chase_per_rank","xba_per_rank",
-            "xslg_per_rank"
+            "xslg_per_rank","xwoba_per_rank"
         ]
         update_data = ranked_df[update_cols].to_dict(orient="records")
         for record in update_data:
